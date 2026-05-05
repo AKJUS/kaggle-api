@@ -6576,11 +6576,13 @@ class KaggleApi:
         max_task_len = max((len(t.slug.task_slug) for t in tasks), default=40)
         max_task_len = max(max_task_len, 40)
 
-        print(f"{'Task':<{max_task_len}} {'Status':<20} {'Created':<20}")
-        print("-" * (max_task_len + 40))
+        print(f"{'Task':<{max_task_len}} {'Version':<10} {'Status':<20} {'Created':<20}")
+        print("-" * (max_task_len + 53))
         for t in tasks:
+            version = str(t.slug.version_number) if t.slug.version_number else "unset"
             print(
-                f"{t.slug.task_slug:<{max_task_len}} {KaggleApi._clean_enum_str(t.creation_state):<20} {KaggleApi._format_time(t.create_time):<20}"
+                f"{t.slug.task_slug:<{max_task_len}} {version:<10}"
+                f" {KaggleApi._clean_enum_str(t.creation_state):<20} {KaggleApi._format_time(t.create_time):<20}"
             )
 
     @staticmethod
@@ -6836,7 +6838,8 @@ class KaggleApi:
                 return
             elif state not in self._PENDING_CREATION_STATES:
                 error_msg = f"Task '{task}' creation failed with status: {self._clean_enum_str(state)}"
-                if error := getattr(task_info, "error_message", None):
+                error = getattr(task_info, "error", None) or getattr(task_info, "creation_error_message", None)
+                if error:
                     error_msg += f" Error: {error}"
                 raise ValueError(error_msg)
 
@@ -6865,7 +6868,7 @@ class KaggleApi:
                     details = []
                     for r in errored:
                         slug = self._short_model_slug(r.model_version_slug)
-                        msg = r.error_message.strip() if r.error_message else "No error message"
+                        msg = (getattr(r, "error_message", None) or "").strip() or "No error message"
                         details.append(f"  [{slug}]\n    {msg}")
                     raise ValueError(f"{len(errored)} run(s) failed:\n" + "\n".join(details))
                 return
@@ -6953,6 +6956,8 @@ class KaggleApi:
         self._write_benchmarks_reference(os.path.dirname(os.path.abspath(example_file)))
 
     def benchmarks_tasks_push_cli(self, task, file, wait=None, poll_interval=10):
+        if poll_interval is not None and poll_interval <= 0:
+            raise ValueError("--poll-interval must be a positive integer")
         if not os.path.isfile(file):
             raise ValueError(f"File {file} does not exist")
         if not file.endswith(".py"):
@@ -6990,7 +6995,7 @@ class KaggleApi:
             request.text = notebook_content
 
             response = kaggle.benchmarks.benchmark_tasks_api_client.create_benchmark_task(request)
-            error = getattr(response, "error_message", None) or getattr(response, "errorMessage", None)
+            error = getattr(response, "error", None)
             if error:
                 raise ValueError(f"Failed to push task: {error}")
 
@@ -7005,6 +7010,8 @@ class KaggleApi:
                 self._poll_task_creation(kaggle, task_slug, wait, poll_interval)
 
     def benchmarks_tasks_run_cli(self, task, model=None, wait=None, poll_interval=10):
+        if poll_interval is not None and poll_interval <= 0:
+            raise ValueError("--poll-interval must be a positive integer")
         models = self._normalize_model_list(model)
         task = slugify(task)
 
@@ -7069,6 +7076,8 @@ class KaggleApi:
         with self.build_kaggle_client() as kaggle:
             task_info = self._get_benchmark_task(task, kaggle)
             print(f"Task:     {task_info.slug.task_slug}")
+            version = task_info.slug.version_number or "unset"
+            print(f"Version:  {version}")
             print(f"Status:   {self._clean_enum_str(task_info.creation_state)}")
             print(f"Created:  {self._format_time(task_info.create_time)}")
             url = getattr(task_info, "url", None)
@@ -7088,7 +7097,8 @@ class KaggleApi:
         output = output or "."
 
         with self.build_kaggle_client() as kaggle:
-            self._get_benchmark_task(task, kaggle)
+            task_info = self._get_benchmark_task(task, kaggle)
+            version = str(task_info.slug.version_number) if task_info.slug.version_number else "unset"
             runs = self._fetch_task_runs(kaggle, task, model)
 
             if not runs:
@@ -7113,8 +7123,8 @@ class KaggleApi:
                 dl_request = ApiDownloadBenchmarkTaskRunOutputRequest()
                 dl_request.run_id = r.id
                 slug = self._short_model_slug(r.model_version_slug)
-                # Hierarchical layout: {output}/{task}/{model}/{run_id}/
-                outdir = os.path.join(output, task, slug, str(r.id))
+                # Hierarchical layout: {output}/{task}/{version}/{model}/{run_id}/
+                outdir = os.path.join(output, task, version, slug, str(r.id))
 
                 if os.path.isdir(outdir):
                     print(f"Skipping {slug} (run {r.id}) — already downloaded to {outdir}")
